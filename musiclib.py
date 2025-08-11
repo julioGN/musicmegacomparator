@@ -25,16 +25,16 @@ Examples:
   python run_consolidated.py cli          # Show CLI options
   
   # Direct CLI usage:
-  python musictools.py compare --source apple.csv --target spotify.csv
-  python musictools.py create-playlist --tracks missing.csv --headers auth.json
-  python musictools.py analyze --libraries *.csv
+  python musiclib-cli.py compare --source apple.csv --target spotify.csv
+  python musiclib-cli.py create-playlist --tracks missing.csv --headers auth.json
+  python musiclib-cli.py analyze --libraries *.csv
 """)
 
 def launch_web():
     """Launch the Streamlit web interface."""
     print("🚀 Launching web interface...")
     try:
-        subprocess.run([sys.executable, "-m", "streamlit", "run", "musicweb.py"], check=True)
+        subprocess.run([sys.executable, "-m", "streamlit", "run", "musiclib-web.py"], check=True)
     except subprocess.CalledProcessError as e:
         print(f"❌ Failed to launch web interface: {e}")
         print("💡 Make sure streamlit is installed: pip install streamlit")
@@ -46,7 +46,7 @@ def show_cli_help():
     print("📋 CLI Interface Help:")
     print("=" * 50)
     try:
-        subprocess.run([sys.executable, "musictools.py", "--help"], check=True)
+        subprocess.run([sys.executable, "musiclib-cli.py", "--help"], check=True)
     except subprocess.CalledProcessError as e:
         print(f"❌ Failed to show CLI help: {e}")
 
