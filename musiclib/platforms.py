@@ -1,0 +1,596 @@
+"""
+Platform-specific parsers for music library data.
+"""
+
+import json
+import csv
+import re
+from typing import Dict, List, Optional, Any, Tuple
+from pathlib import Path
+import pandas as pd
+
+from .core import Track, Library, TrackNormalizer
+
+
+class BasePlatformParser:
+    """Base class for platform-specific parsers."""
+    
+    def __init__(self, platform_name: str):
+        self.platform_name = platform_name
+    
+    def parse_file(self, file_path: str) -> Library:
+        """Parse a file and return a Library object."""
+        raise NotImplementedError("Subclasses must implement parse_file")
+    
+    def _detect_encoding(self, file_path: str) -> str:
+        """Detect file encoding."""
+        encodings = ['utf-8', 'utf-8-sig', 'latin-1', 'cp1252']
+        
+        for encoding in encodings:
+            try:
+                with open(file_path, 'r', encoding=encoding) as f:
+                    f.read()
+                return encoding
+            except (UnicodeDecodeError, UnicodeError):
+                continue
+        
+        return 'utf-8'  # Fallback
+
+
+class AppleMusicParser(BasePlatformParser):
+    """Parser for Apple Music CSV exports."""
+    
+    # Common column name variations
+    COLUMN_MAPPINGS = {
+        'title': ['title', 'song', 'track', 'name', 'track name'],
+        'artist': ['artist', 'artist name', 'artists', 'performer'],
+        'album': ['album', 'album name', 'release'],
+        'duration': ['duration', 'time', 'length', 'track time'],
+        'isrc': ['isrc', 'isrc code'],
+        'year': ['year', 'release year', 'album year'],
+        'genre': ['genre', 'genres', 'primary genre'],
+        'track_number': ['track number', 'track #', '#'],
+        'track_id': ['track id', 'id', 'apple id'],
+        'url': ['url', 'link', 'apple music url']
+    }
+    
+    def __init__(self):
+        super().__init__("Apple Music")
+    
+    def parse_file(self, file_path: str) -> Library:
+        """Parse Apple Music CSV file."""
+        library = Library(f"Apple Music Library from {Path(file_path).name}", "apple_music")
+        
+        encoding = self._detect_encoding(file_path)
+        
+        try:
+            # Try pandas first
+            df = pd.read_csv(file_path, encoding=encoding)
+            
+            # Map columns
+            column_map = self._map_columns(df.columns.tolist())
+            df = df.rename(columns=column_map)
+            
+            # Process each row
+            for _, row in df.iterrows():
+                track = self._row_to_track(row)
+                if track:
+                    library.add_track(track)
+        
+        except Exception as e:
+            # Fallback to manual CSV parsing
+            library = self._parse_csv_manual(file_path, encoding)
+        
+        return library
+    
+    def _map_columns(self, columns: List[str]) -> Dict[str, str]:
+        """Map CSV columns to standard field names."""
+        column_map = {}
+        columns_lower = [col.lower() for col in columns]
+        
+        for standard_name, variations in self.COLUMN_MAPPINGS.items():
+            for variation in variations:
+                for i, col_lower in enumerate(columns_lower):
+                    if variation in col_lower:
+                        column_map[columns[i]] = standard_name
+                        break
+                if standard_name in column_map.values():
+                    break
+        
+        return column_map
+    
+    def _row_to_track(self, row: pd.Series) -> Optional[Track]:
+        """Convert DataFrame row to Track object."""
+        try:
+            # Required fields
+            title = str(row.get('title', '')).strip()
+            artist = str(row.get('artist', '')).strip()
+            
+            if not title or not artist or title.lower() == 'nan' or artist.lower() == 'nan':
+                return None
+            
+            # Optional fields
+            album = str(row.get('album', '')).strip() or None
+            if album and album.lower() == 'nan':
+                album = None
+            
+            duration = self._parse_duration(row.get('duration'))
+            isrc = str(row.get('isrc', '')).strip() or None
+            year = self._parse_year(row.get('year'))
+            genre = str(row.get('genre', '')).strip() or None
+            track_number = self._parse_int(row.get('track_number'))
+            track_id = str(row.get('track_id', '')).strip() or None
+            url = str(row.get('url', '')).strip() or None
+            
+            return Track(
+                title=title,
+                artist=artist,
+                album=album,
+                duration=duration,
+                isrc=isrc,
+                platform="apple_music",
+                track_id=track_id,
+                url=url,
+                year=year,
+                genre=genre,
+                track_number=track_number
+            )
+        
+        except Exception as e:
+            return None
+    
+    def _parse_csv_manual(self, file_path: str, encoding: str) -> Library:
+        """Manual CSV parsing fallback."""
+        library = Library(f"Apple Music Library from {Path(file_path).name}", "apple_music")
+        
+        with open(file_path, 'r', encoding=encoding) as f:
+            # Try different delimiters
+            sample = f.read(1024)
+            f.seek(0)
+            
+            delimiter = ','
+            if ';' in sample and sample.count(';') > sample.count(','):
+                delimiter = ';'
+            elif '\t' in sample:
+                delimiter = '\t'
+            
+            reader = csv.DictReader(f, delimiter=delimiter)
+            
+            # Map columns
+            fieldnames = [field.strip() for field in reader.fieldnames or []]
+            column_map = self._map_columns(fieldnames)
+            
+            for row_dict in reader:
+                # Rename columns
+                mapped_row = {}
+                for old_key, value in row_dict.items():
+                    new_key = column_map.get(old_key, old_key)
+                    mapped_row[new_key] = value
+                
+                # Convert to pandas Series for consistency
+                row = pd.Series(mapped_row)
+                track = self._row_to_track(row)
+                if track:
+                    library.add_track(track)
+        
+        return library
+    
+    def _parse_duration(self, duration_val: Any) -> Optional[int]:
+        """Parse duration to seconds."""
+        if pd.isna(duration_val) or not duration_val:
+            return None
+        
+        return TrackNormalizer.parse_duration(str(duration_val))
+    
+    def _parse_year(self, year_val: Any) -> Optional[int]:
+        """Parse year value."""
+        if pd.isna(year_val) or not year_val:
+            return None
+        
+        try:
+            year_str = str(year_val).strip()
+            # Extract 4-digit year
+            year_match = re.search(r'\b(19|20)\d{2}\b', year_str)
+            if year_match:
+                return int(year_match.group())
+            return int(float(year_str))
+        except (ValueError, TypeError):
+            return None
+    
+    def _parse_int(self, val: Any) -> Optional[int]:
+        """Parse integer value."""
+        if pd.isna(val) or not val:
+            return None
+        
+        try:
+            return int(float(str(val)))
+        except (ValueError, TypeError):
+            return None
+
+
+class SpotifyParser(BasePlatformParser):
+    """Parser for Spotify CSV exports."""
+    
+    # Spotify-specific column mappings
+    COLUMN_MAPPINGS = {
+        'title': ['track name', 'song', 'title', 'name'],
+        'artist': ['artist name(s)', 'artist', 'artists', 'artist name'],
+        'album': ['album name', 'album', 'release name'],
+        'duration': ['duration (ms)', 'duration_ms', 'duration', 'track duration (ms)'],
+        'isrc': ['isrc', 'isrc code'],
+        'year': ['release year', 'year', 'album year'],
+        'track_id': ['track id', 'spotify id', 'id'],
+        'url': ['track url', 'spotify url', 'external urls', 'url']
+    }
+    
+    def __init__(self):
+        super().__init__("Spotify")
+    
+    def parse_file(self, file_path: str) -> Library:
+        """Parse Spotify CSV file."""
+        library = Library(f"Spotify Library from {Path(file_path).name}", "spotify")
+        
+        encoding = self._detect_encoding(file_path)
+        
+        try:
+            df = pd.read_csv(file_path, encoding=encoding)
+            
+            # Map columns
+            column_map = self._map_columns(df.columns.tolist())
+            df = df.rename(columns=column_map)
+            
+            # Process each row
+            for _, row in df.iterrows():
+                track = self._row_to_track(row)
+                if track:
+                    library.add_track(track)
+        
+        except Exception:
+            # Fallback to manual parsing
+            library = self._parse_csv_manual(file_path, encoding)
+        
+        return library
+    
+    def _map_columns(self, columns: List[str]) -> Dict[str, str]:
+        """Map CSV columns to standard field names."""
+        column_map = {}
+        columns_lower = [col.lower() for col in columns]
+        
+        for standard_name, variations in self.COLUMN_MAPPINGS.items():
+            for variation in variations:
+                for i, col_lower in enumerate(columns_lower):
+                    if variation in col_lower:
+                        column_map[columns[i]] = standard_name
+                        break
+                if standard_name in column_map.values():
+                    break
+        
+        return column_map
+    
+    def _row_to_track(self, row: pd.Series) -> Optional[Track]:
+        """Convert DataFrame row to Track object."""
+        try:
+            title = str(row.get('title', '')).strip()
+            artist = str(row.get('artist', '')).strip()
+            
+            if not title or not artist or title.lower() == 'nan' or artist.lower() == 'nan':
+                return None
+            
+            album = str(row.get('album', '')).strip() or None
+            if album and album.lower() == 'nan':
+                album = None
+            
+            # Spotify durations are in milliseconds
+            duration_ms = row.get('duration')
+            duration = None
+            if duration_ms and not pd.isna(duration_ms):
+                try:
+                    duration = int(float(duration_ms)) // 1000
+                except (ValueError, TypeError):
+                    pass
+            
+            isrc = str(row.get('isrc', '')).strip() or None
+            year = self._parse_year(row.get('year'))
+            track_id = str(row.get('track_id', '')).strip() or None
+            url = str(row.get('url', '')).strip() or None
+            
+            return Track(
+                title=title,
+                artist=artist,
+                album=album,
+                duration=duration,
+                isrc=isrc,
+                platform="spotify",
+                track_id=track_id,
+                url=url,
+                year=year
+            )
+        
+        except Exception:
+            return None
+    
+    def _parse_csv_manual(self, file_path: str, encoding: str) -> Library:
+        """Manual CSV parsing fallback."""
+        library = Library(f"Spotify Library from {Path(file_path).name}", "spotify")
+        
+        with open(file_path, 'r', encoding=encoding) as f:
+            reader = csv.DictReader(f)
+            
+            fieldnames = [field.strip() for field in reader.fieldnames or []]
+            column_map = self._map_columns(fieldnames)
+            
+            for row_dict in reader:
+                mapped_row = {}
+                for old_key, value in row_dict.items():
+                    new_key = column_map.get(old_key, old_key)
+                    mapped_row[new_key] = value
+                
+                row = pd.Series(mapped_row)
+                track = self._row_to_track(row)
+                if track:
+                    library.add_track(track)
+        
+        return library
+    
+    def _parse_year(self, year_val: Any) -> Optional[int]:
+        """Parse year value."""
+        if pd.isna(year_val) or not year_val:
+            return None
+        
+        try:
+            year_str = str(year_val).strip()
+            year_match = re.search(r'\b(19|20)\d{2}\b', year_str)
+            if year_match:
+                return int(year_match.group())
+            return int(float(year_str))
+        except (ValueError, TypeError):
+            return None
+
+
+class YouTubeMusicParser(BasePlatformParser):
+    """Parser for YouTube Music JSON/CSV exports."""
+    
+    COLUMN_MAPPINGS = {
+        'title': ['title', 'song', 'track', 'name'],
+        'artist': ['artist', 'artists', 'channel', 'uploader'],
+        'album': ['album', 'playlist', 'release'],
+        'duration': ['duration', 'length'],
+        'track_id': ['id', 'video id', 'youtube id'],
+        'url': ['url', 'link', 'video url']
+    }
+    
+    def __init__(self):
+        super().__init__("YouTube Music")
+    
+    def parse_file(self, file_path: str) -> Library:
+        """Parse YouTube Music file (JSON or CSV)."""
+        file_path = Path(file_path)
+        library = Library(f"YouTube Music Library from {file_path.name}", "youtube_music")
+        
+        if file_path.suffix.lower() == '.json':
+            return self._parse_json(file_path, library)
+        else:
+            return self._parse_csv(file_path, library)
+    
+    def _parse_json(self, file_path: Path, library: Library) -> Library:
+        """Parse YouTube Music JSON export."""
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            
+            # Handle different JSON structures
+            tracks_data = data
+            if isinstance(data, dict):
+                # Look for tracks in common keys
+                possible_keys = ['tracks', 'items', 'data', 'library', 'songs']
+                for key in possible_keys:
+                    if key in data and isinstance(data[key], list):
+                        tracks_data = data[key]
+                        break
+            
+            if not isinstance(tracks_data, list):
+                tracks_data = [data] if isinstance(data, dict) else []
+            
+            for item in tracks_data:
+                track = self._json_item_to_track(item)
+                if track:
+                    library.add_track(track)
+        
+        except Exception as e:
+            print(f"Error parsing JSON file: {e}")
+        
+        return library
+    
+    def _parse_csv(self, file_path: Path, library: Library) -> Library:
+        """Parse YouTube Music CSV export."""
+        encoding = self._detect_encoding(str(file_path))
+        
+        try:
+            df = pd.read_csv(file_path, encoding=encoding)
+            
+            column_map = self._map_columns(df.columns.tolist())
+            df = df.rename(columns=column_map)
+            
+            for _, row in df.iterrows():
+                track = self._csv_row_to_track(row)
+                if track:
+                    library.add_track(track)
+        
+        except Exception:
+            # Manual parsing fallback
+            library = self._parse_csv_manual(str(file_path), encoding, library)
+        
+        return library
+    
+    def _json_item_to_track(self, item: Dict[str, Any]) -> Optional[Track]:
+        """Convert JSON item to Track object."""
+        try:
+            title = item.get('title') or item.get('name') or item.get('song', '')
+            artist = item.get('artist') or item.get('channel') or item.get('uploader', '')
+            
+            if not title or not artist:
+                return None
+            
+            # YouTube Music specific cleaning
+            title = str(title).strip()
+            artist = str(artist).strip()
+            
+            # Remove common YouTube artifacts
+            title = re.sub(r'\s*\(Official\s+.*?\)', '', title, flags=re.IGNORECASE)
+            title = re.sub(r'\s*\[Official\s+.*?\]', '', title, flags=re.IGNORECASE)
+            
+            album = item.get('album') or item.get('playlist')
+            if album:
+                album = str(album).strip()
+            
+            duration = self._parse_duration_json(item.get('duration'))
+            track_id = item.get('id') or item.get('videoId') or item.get('video_id')
+            url = item.get('url') or item.get('link')
+            
+            return Track(
+                title=title,
+                artist=artist,
+                album=album,
+                duration=duration,
+                platform="youtube_music",
+                track_id=str(track_id) if track_id else None,
+                url=str(url) if url else None
+            )
+        
+        except Exception:
+            return None
+    
+    def _csv_row_to_track(self, row: pd.Series) -> Optional[Track]:
+        """Convert CSV row to Track object."""
+        try:
+            title = str(row.get('title', '')).strip()
+            artist = str(row.get('artist', '')).strip()
+            
+            if not title or not artist or title.lower() == 'nan' or artist.lower() == 'nan':
+                return None
+            
+            # Clean YouTube artifacts
+            title = re.sub(r'\s*\(Official\s+.*?\)', '', title, flags=re.IGNORECASE)
+            title = re.sub(r'\s*\[Official\s+.*?\]', '', title, flags=re.IGNORECASE)
+            
+            album = str(row.get('album', '')).strip() or None
+            if album and album.lower() == 'nan':
+                album = None
+            
+            duration = TrackNormalizer.parse_duration(row.get('duration'))
+            track_id = str(row.get('track_id', '')).strip() or None
+            url = str(row.get('url', '')).strip() or None
+            
+            return Track(
+                title=title,
+                artist=artist,
+                album=album,
+                duration=duration,
+                platform="youtube_music",
+                track_id=track_id,
+                url=url
+            )
+        
+        except Exception:
+            return None
+    
+    def _parse_csv_manual(self, file_path: str, encoding: str, library: Library) -> Library:
+        """Manual CSV parsing fallback."""
+        with open(file_path, 'r', encoding=encoding) as f:
+            reader = csv.DictReader(f)
+            
+            fieldnames = [field.strip() for field in reader.fieldnames or []]
+            column_map = self._map_columns(fieldnames)
+            
+            for row_dict in reader:
+                mapped_row = {}
+                for old_key, value in row_dict.items():
+                    new_key = column_map.get(old_key, old_key)
+                    mapped_row[new_key] = value
+                
+                row = pd.Series(mapped_row)
+                track = self._csv_row_to_track(row)
+                if track:
+                    library.add_track(track)
+        
+        return library
+    
+    def _map_columns(self, columns: List[str]) -> Dict[str, str]:
+        """Map columns to standard names."""
+        column_map = {}
+        columns_lower = [col.lower() for col in columns]
+        
+        for standard_name, variations in self.COLUMN_MAPPINGS.items():
+            for variation in variations:
+                for i, col_lower in enumerate(columns_lower):
+                    if variation in col_lower:
+                        column_map[columns[i]] = standard_name
+                        break
+                if standard_name in column_map.values():
+                    break
+        
+        return column_map
+    
+    def _parse_duration_json(self, duration_val: Any) -> Optional[int]:
+        """Parse duration from JSON format."""
+        if not duration_val:
+            return None
+        
+        duration_str = str(duration_val)
+        
+        # Handle ISO 8601 duration (PT3M45S)
+        iso_match = re.match(r'PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?', duration_str)
+        if iso_match:
+            hours, minutes, seconds = iso_match.groups()
+            total_seconds = 0
+            if hours:
+                total_seconds += int(hours) * 3600
+            if minutes:
+                total_seconds += int(minutes) * 60
+            if seconds:
+                total_seconds += int(seconds)
+            return total_seconds if total_seconds > 0 else None
+        
+        # Fallback to normal parsing
+        return TrackNormalizer.parse_duration(duration_str)
+
+
+def detect_platform(file_path: str) -> str:
+    """Detect the platform type from file content."""
+    file_path = Path(file_path)
+    
+    # Check file extension first
+    if file_path.suffix.lower() == '.json':
+        return 'youtube_music'  # Most likely
+    
+    # Check file content for CSV files
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            header_line = f.readline().lower()
+        
+        if 'duration (ms)' in header_line or 'artist name(s)' in header_line:
+            return 'spotify'
+        elif 'isrc' in header_line or 'apple' in header_line:
+            return 'apple_music'
+        elif 'channel' in header_line or 'video' in header_line:
+            return 'youtube_music'
+        else:
+            # Default to Apple Music for unknown CSV
+            return 'apple_music'
+    
+    except Exception:
+        return 'unknown'
+
+
+def create_parser(platform: str) -> BasePlatformParser:
+    """Factory function to create appropriate parser."""
+    platform = platform.lower().replace('_', ' ').replace('-', ' ')
+    
+    if 'apple' in platform or platform == 'am':
+        return AppleMusicParser()
+    elif 'spotify' in platform:
+        return SpotifyParser()
+    elif 'youtube' in platform or 'ytm' in platform or platform == 'yt':
+        return YouTubeMusicParser()
+    else:
+        raise ValueError(f"Unknown platform: {platform}")
