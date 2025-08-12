@@ -83,6 +83,9 @@ class PlaylistManager:
         
         except Exception as e:
             print(f"Search failed for '{track.title}' by '{track.artist}': {e}")
+            # Check for specific JSON parsing errors
+            if "Expecting value" in str(e):
+                print(f"JSON parsing error - possible empty response from YouTube Music API")
             return []
     
     def find_best_match(self, track: Track) -> Optional[Dict[str, Any]]:
@@ -113,11 +116,25 @@ class PlaylistManager:
             }
         
         try:
-            # Create playlist
-            playlist_id = self.ytmusic.create_playlist(
+            # Create playlist with better error handling
+            response = self.ytmusic.create_playlist(
                 title=playlist_name,
                 description=f"Created from music library comparison tool"
             )
+            
+            # Check if response is valid
+            if not response:
+                raise Exception("Empty response from YouTube Music API")
+            
+            # Handle different response formats from ytmusicapi
+            if isinstance(response, dict):
+                playlist_id = response.get('id') or response.get('playlistId')
+                if not playlist_id:
+                    raise Exception(f"No playlist ID in response: {response}")
+            elif isinstance(response, str):
+                playlist_id = response
+            else:
+                raise Exception(f"Unexpected response type from YouTube Music API: {type(response)}, content: {response}")
             
             added_tracks = []
             failed_tracks = []
@@ -134,8 +151,12 @@ class PlaylistManager:
                     playlist_id, batch, search_fallback
                 )
                 
-                added_tracks.extend(batch_results['added'])
-                failed_tracks.extend(batch_results['failed'])
+                # Check for batch processing errors
+                if not batch_results:
+                    failed_tracks.extend([{'track': t.to_dict(), 'reason': 'Batch processing failed'} for t in batch])
+                else:
+                    added_tracks.extend(batch_results['added'])
+                    failed_tracks.extend(batch_results['failed'])
                 
                 # Rate limiting
                 time.sleep(1.2)  # Respect API limits
@@ -154,12 +175,15 @@ class PlaylistManager:
             }
         
         except Exception as e:
+            error_msg = str(e)
+            if "Expecting value" in error_msg:
+                error_msg = f"YouTube Music API returned invalid response. This may be due to: 1) Authentication issues (check headers_auth.json), 2) Rate limiting, or 3) Network connectivity. Original error: {error_msg}"
             return {
                 'success': False,
-                'error': str(e),
+                'error': error_msg,
                 'playlist_id': None,
                 'added_tracks': [],
-                'failed_tracks': tracks
+                'failed_tracks': [{'track': t.to_dict(), 'reason': 'Playlist creation failed'} for t in tracks]
             }
     
     def _add_tracks_to_playlist(self, playlist_id: str, tracks: List[Track], 
@@ -177,13 +201,28 @@ class PlaylistManager:
                     video_id = match['youtube_track'].get('videoId')
                     
                     if video_id:
-                        # Add to playlist
-                        self.ytmusic.add_playlist_items(playlist_id, [video_id])
-                        added_tracks.append({
-                            'original_track': track.to_dict(),
-                            'youtube_match': match,
-                            'confidence': match['confidence']
-                        })
+                        # Add to playlist with error handling
+                        try:
+                            result = self.ytmusic.add_playlist_items(playlist_id, [video_id])
+                            if result:  # Check if addition was successful
+                                added_tracks.append({
+                                    'original_track': track.to_dict(),
+                                    'youtube_match': match,
+                                    'confidence': match['confidence']
+                                })
+                            else:
+                                failed_tracks.append({
+                                    'track': track.to_dict(),
+                                    'reason': 'Failed to add to playlist'
+                                })
+                        except Exception as add_error:
+                            error_msg = str(add_error)
+                            if "Expecting value" in error_msg:
+                                error_msg = f"YouTube Music API returned invalid response (possible rate limit or authentication issue): {error_msg}"
+                            failed_tracks.append({
+                                'track': track.to_dict(),
+                                'reason': f'Add to playlist error: {error_msg}'
+                            })
                     else:
                         failed_tracks.append({
                             'track': track.to_dict(),

@@ -8,6 +8,7 @@ import re
 from typing import Dict, List, Optional, Any, Tuple
 from pathlib import Path
 import pandas as pd
+import plistlib
 
 from .core import Track, Library, TrackNormalizer
 
@@ -347,6 +348,90 @@ class SpotifyParser(BasePlatformParser):
             return None
 
 
+class AppleMusicXMLParser(BasePlatformParser):
+    """Parser for native Apple Music/iTunes Library XML exports."""
+
+    def __init__(self):
+        super().__init__("Apple Music (XML)")
+
+    def parse_file(self, file_path: str) -> Library:
+        library = Library(f"Apple Music Library (XML) from {Path(file_path).name}", "apple_music")
+        try:
+            with open(file_path, 'rb') as f:
+                data = plistlib.load(f)
+        except Exception as e:
+            # Not a valid plist
+            return library
+
+        # iTunes/Music library XML structure has a 'Tracks' dict mapping track IDs to dicts
+        tracks_dict = data.get('Tracks') or data.get('tracks') or {}
+        if not isinstance(tracks_dict, dict):
+            return library
+
+        for _, t in tracks_dict.items():
+            track = self._dict_to_track(t)
+            if track:
+                library.add_track(track)
+        return library
+
+    def _dict_to_track(self, t: Dict[str, Any]) -> Optional[Track]:
+        try:
+            title = (t.get('Name') or t.get('name') or '').strip()
+            artist = (t.get('Artist') or t.get('artist') or '').strip()
+            if not title or not artist:
+                return None
+
+            album = (t.get('Album') or t.get('album') or None)
+
+            # Durations in XML are milliseconds (Total Time)
+            total_time = t.get('Total Time') or t.get('total time')
+            duration = None
+            if total_time is not None:
+                try:
+                    duration = int(total_time) // 1000
+                except Exception:
+                    duration = None
+
+            year = None
+            if 'Year' in t:
+                try:
+                    year = int(t['Year'])
+                except Exception:
+                    year = None
+
+            genre = t.get('Genre') or t.get('genre')
+            track_number = None
+            if 'Track Number' in t:
+                try:
+                    track_number = int(t['Track Number'])
+                except Exception:
+                    track_number = None
+
+            # ISRC is not typically present in Apple Music XML, but use if available
+            isrc = t.get('ISRC') or t.get('isrc')
+
+            # Prefer Persistent ID as stable identifier if present
+            persistent_id = t.get('Persistent ID') or t.get('persistent id')
+            track_id = persistent_id or str(t.get('Track ID') or '') or None
+
+            url = t.get('Location')
+
+            return Track(
+                title=title,
+                artist=artist,
+                album=album,
+                duration=duration,
+                isrc=isrc,
+                platform='apple_music',
+                track_id=str(track_id) if track_id else None,
+                url=str(url) if url else None,
+                year=year,
+                genre=genre,
+                track_number=track_number
+            )
+        except Exception:
+            return None
+
 class YouTubeMusicParser(BasePlatformParser):
     """Parser for YouTube Music JSON/CSV exports."""
     
@@ -562,6 +647,8 @@ def detect_platform(file_path: str) -> str:
     # Check file extension first
     if file_path.suffix.lower() == '.json':
         return 'youtube_music'  # Most likely
+    if file_path.suffix.lower() == '.xml':
+        return 'apple_music_xml'
     
     # Check file content for CSV files
     try:
@@ -586,6 +673,8 @@ def create_parser(platform: str) -> BasePlatformParser:
     """Factory function to create appropriate parser."""
     platform = platform.lower().replace('_', ' ').replace('-', ' ')
     
+    if platform in ('apple music xml', 'apple xml', 'apple_music_xml', 'amxml'):
+        return AppleMusicXMLParser()
     if 'apple' in platform or platform == 'am':
         return AppleMusicParser()
     elif 'spotify' in platform:

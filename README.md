@@ -11,6 +11,7 @@ A comprehensive toolkit for comparing and managing music libraries across multip
 - **💻 Command Line Tools** - Powerful CLI for automation and scripting
 - **🔍 Metadata Enrichment** - Enhance your library with MusicBrainz data
 - **📈 Visual Analytics** - Interactive charts and detailed reporting
+- **🧹 YT Music Dedup** - Detect and playlist duplicate tracks in your YouTube Music library
 
 ## 🎯 Quick Start
 
@@ -26,6 +27,7 @@ python musiclib.py web
 - Upload your library files (CSV/JSON) with drag-and-drop
 - Compare libraries with real-time visual feedback
 - Create YouTube Music playlists from missing tracks
+- Scan for duplicates in YouTube Music and build a duplicates playlist
 - Export results as CSV files
 
 ### 3. Command Line Interface
@@ -63,11 +65,38 @@ print(f"Match rate: {result.match_rate:.1%}")
 print(f"Missing tracks: {len(result.missing_tracks)}")
 ```
 
+#### YouTube Music Deduplication
+```bash
+# Scan your YouTube Music library for duplicates and export a report
+python musiclib-cli.py dedup-ytm --headers headers_auth.json --threshold 0.88 --output-dir reports/
+
+# Create a playlist with all detected duplicates
+python musiclib-cli.py dedup-ytm --headers headers_auth.json --create-playlist --playlist-name "YT Music Duplicates"
+```
+
+#### YouTube Music Cleanup (CLI)
+```bash
+# Plan and apply cleanup: prefer explicit, replace in playlists, unlike losers
+python musiclib-cli.py clean-ytm --headers headers_auth.json --prefer-explicit \
+  --replace-in-playlists --unlike-losers --threshold 0.88 --dry-run
+
+# Apply for real (no --dry-run) and save the plan
+python musiclib-cli.py clean-ytm --headers headers_auth.json --prefer-explicit \
+  --replace-in-playlists --unlike-losers --save-plan cleanup_plan.json
+
+# Save undo log while applying and rollback later
+python musiclib-cli.py clean-ytm --headers headers_auth.json --prefer-explicit \
+  --replace-in-playlists --unlike-losers --save-undo undo_log.json
+
+python musiclib-cli.py rollback-ytm --headers headers_auth.json --undo-log undo_log.json
+```
+
 ## 🎵 Supported Platforms & Formats
 
 ### Apple Music
-Export your library as CSV with columns:
+Export your library as CSV or native Apple Music/iTunes XML:
 - `title`, `artist`, `album`, `duration`, `isrc`, `year`, `genre`
+- XML: Library.xml from Music/iTunes is supported (Title/Artist/Album/Total Time/Year/Genre). ISRC is not typically present in XML, but is used if available.
 
 ### Spotify
 Use tools like Exportify to get CSV with:
@@ -107,6 +136,13 @@ Export from Google Takeout (JSON format) or CSV with:
 - **Rate limiting** to respect API limits
 - **Progress tracking** for large playlists
 - **Detailed failure reporting** for tracks not found
+
+### Deduplication
+- Detects likely duplicates using combined title and artist similarity
+- Ranks duplicates by quality (album vs single, duration, official audio)
+- Exports a JSON report and can build a playlist of duplicates
+  - Playlist modes: All duplicates, Winners only (preferred/explicit), Losers only (everything except preferred)
+  - Dry run mode in Web UI (no playlist) and CSV exports for Winners/Losers
 
 ## 🔍 Metadata Enrichment
 
@@ -150,6 +186,7 @@ musiclib/
 │   ├── platforms.py         # Platform-specific parsers  
 │   ├── comparison.py        # Library comparison logic
 │   ├── playlist.py          # YouTube Music integration
+│   ├── dedup.py             # YouTube Music deduplication
 │   └── enrichment.py        # MusicBrainz enrichment
 ├── musiclib-cli.py          # Command line interface
 ├── musiclib-web.py          # Streamlit web interface  

@@ -17,8 +17,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any
 
 from musiclib import (
-    Library, Track, LibraryComparator, PlaylistManager, 
-    EnrichmentManager, create_parser, detect_platform
+    Library, Track, LibraryComparator, PlaylistManager,
+    EnrichmentManager, YouTubeMusicDeduplicator, YTMusicCleaner, create_parser, detect_platform
 )
 
 
@@ -325,6 +325,219 @@ def enrich_command(args):
     return enriched_results
 
 
+def dedup_youtube_music_command(args):
+    """Handle YouTube Music library deduplication."""
+    print("🎵 YouTube Music Deduplication")
+    print("=" * 50)
+
+    if not args.headers or not Path(args.headers).exists():
+        print("❌ Error: headers_auth.json is required (generate with 'ytmusicapi setup')")
+        return None
+
+    dedup = YouTubeMusicDeduplicator(args.headers)
+    if not dedup.is_available():
+        print("❌ ytmusicapi not installed. Install with: pip install ytmusicapi")
+        return None
+
+    print("\n🔐 Authenticating with YouTube Music...")
+    if not dedup.authenticate():
+        print("❌ Authentication failed. Ensure headers_auth.json is valid.")
+        return None
+
+    print("\n📥 Fetching library songs...")
+    songs = dedup.get_library_songs(limit=args.limit)
+    print(f"Loaded {len(songs)} library songs")
+
+    print("\n🧭 Scanning for duplicates...")
+    groups = dedup.find_duplicates(similarity_threshold=args.threshold)
+    total_dup_tracks = sum(len(g['duplicates']) for g in groups)
+    can_remove = sum(len(g['duplicates']) - 1 for g in groups)
+
+    print("\n📊 Deduplication Summary:")
+    print(f"  Duplicate groups: {len(groups)}")
+    print(f"  Total dup tracks: {total_dup_tracks}")
+    print(f"  Potential removals: {can_remove}")
+
+    # Optionally export results
+    if args.output_dir:
+        out_dir = Path(args.output_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        json_path = out_dir / f"ytm_duplicates_{int(time.time())}.json"
+        # Convert RankedDuplicate objects to dicts for JSON
+        serializable = []
+        for g in groups:
+            serializable.append({
+                'id': g['id'],
+                'title': g['title'],
+                'artist': g['artist'],
+                'similarity_scores': g['similarity_scores'],
+                'duplicates': [
+                    (d.__dict__ if hasattr(d, '__dict__') else d) for d in g['duplicates']
+                ]
+            })
+        with open(json_path, 'w') as f:
+            json.dump({
+                'total_library_songs': len(songs),
+                'duplicate_groups': len(groups),
+                'total_duplicates': total_dup_tracks,
+                'can_remove': can_remove,
+                'groups': serializable
+            }, f, indent=2)
+        print(f"💾 Exported duplicate report: {json_path}")
+
+    # Optional playlist creation
+    if args.create_playlist:
+        print("\n🎵 Creating playlist of duplicates...")
+        result = dedup.create_duplicates_playlist(
+            name=args.playlist_name,
+            prefer_explicit=bool(getattr(args, 'prefer_explicit', False)),
+            losers_only=bool(getattr(args, 'losers_only', False)),
+            winners_only=bool(getattr(args, 'winners_only', False))
+        )
+        if result.get('success'):
+            print(f"✅ Playlist created: {result['playlist_url']}")
+            print(f"   Tracks added: {result['total_added']}")
+        else:
+            print(f"❌ Failed to create playlist: {result.get('error')}")
+
+    return {
+        'groups': groups,
+        'total_duplicates': total_dup_tracks,
+        'can_remove': can_remove
+    }
+
+
+def clean_youtube_music_command(args):
+    """Plan and optionally apply cleanup to YouTube Music library and playlists."""
+    print("🧽 YouTube Music Cleanup")
+    print("=" * 50)
+
+    if not args.headers or not Path(args.headers).exists():
+        print("❌ Error: headers_auth.json is required (generate with 'ytmusicapi setup')")
+        return None
+
+    dedup = YouTubeMusicDeduplicator(args.headers)
+    if not dedup.is_available():
+        print("❌ ytmusicapi not installed. Install with: pip install ytmusicapi")
+        return None
+
+    print("\n🔐 Authenticating with YouTube Music...")
+    if not dedup.authenticate():
+        print("❌ Authentication failed. Ensure headers_auth.json is valid.")
+        return None
+
+    print("\n📥 Fetching library songs...")
+    songs = dedup.get_library_songs(limit=args.limit)
+    print(f"Loaded {len(songs)} library songs")
+
+    print("\n🧭 Scanning for duplicates...")
+    groups = dedup.find_duplicates(similarity_threshold=args.threshold)
+    print(f"Found {len(groups)} duplicate groups")
+
+    # Filter by groups if specified
+    include_ids = None
+    if args.groups:
+        try:
+            include_ids = [int(x.strip()) for x in args.groups.split(',') if x.strip()]
+        except ValueError:
+            print("⚠️ Invalid --groups format; expected comma-separated integers")
+
+    # Build plan
+    print("\n📝 Building cleanup plan...")
+    cleaner = YTMusicCleaner(dedup.ytmusic)
+    plan = cleaner.plan_cleanup(
+        groups,
+        prefer_explicit=bool(getattr(args, 'prefer_explicit', False)),
+        include_group_ids=include_ids,
+        replace_in_playlists=bool(getattr(args, 'replace_in_playlists', False)),
+        unlike_losers=bool(getattr(args, 'unlike_losers', False)),
+    )
+
+    # Summary
+    print("\n📊 Plan Summary:")
+    print(f"  Will Unlike:        {len(plan.unlike_video_ids)} tracks")
+    print(f"  Playlists Affected: {len(plan.playlist_edits)}")
+    print(f"  Total Adds:         {sum(len(e.add_video_ids) for e in plan.playlist_edits)}")
+    print(f"  Total Removes:      {sum(len(e.remove_items) for e in plan.playlist_edits)}")
+
+    # Save plan if requested
+    if args.save_plan:
+        out = {
+            'winners_by_group': plan.winners_by_group,
+            'losers_by_group': plan.losers_by_group,
+            'unlike_video_ids': plan.unlike_video_ids,
+            'playlist_edits': [
+                {
+                    'playlist_id': e.playlist_id,
+                    'playlist_name': e.playlist_name,
+                    'add_video_ids': e.add_video_ids,
+                    'remove_items': e.remove_items,
+                }
+                for e in plan.playlist_edits
+            ]
+        }
+        with open(args.save_plan, 'w') as f:
+            json.dump(out, f, indent=2)
+        print(f"💾 Saved plan to {args.save_plan}")
+
+    # Apply if not dry-run
+    if not args.dry_run:
+        print("\n🧹 Applying cleanup...")
+        summary = cleaner.apply_cleanup(
+            plan,
+            do_unlike=bool(getattr(args, 'unlike_losers', False)),
+            do_playlists=bool(getattr(args, 'replace_in_playlists', False)),
+            generate_undo=bool(getattr(args, 'save_undo', None)),
+        )
+        print(f"✅ Done — Unliked: {summary['unliked']}, Adds: {summary['playlist_adds']}, Removes: {summary['playlist_removes']}")
+        if summary['errors']:
+            print("⚠️ Some errors occurred:")
+            for e in summary['errors']:
+                print(f"   - {e}")
+        if args.save_undo and summary.get('undo'):
+            with open(args.save_undo, 'w') as f:
+                json.dump(summary['undo'], f, indent=2)
+            print(f"💾 Saved undo log to {args.save_undo}")
+    else:
+        print("\nℹ️ Dry run — no changes applied")
+    
+    return plan
+
+
+def rollback_youtube_music_command(args):
+    """Rollback a previous cleanup using an undo log."""
+    print("↩️  Rollback YouTube Music Cleanup")
+    print("=" * 50)
+
+    if not args.headers or not Path(args.headers).exists():
+        print("❌ Error: headers_auth.json is required (generate with 'ytmusicapi setup')")
+        return None
+
+    if not Path(args.undo_log).exists():
+        print(f"❌ Undo log not found: {args.undo_log}")
+        return None
+
+    data = None
+    with open(args.undo_log, 'r') as f:
+        data = json.load(f)
+
+    dedup = YouTubeMusicDeduplicator(args.headers)
+    if not dedup.is_available():
+        print("❌ ytmusicapi not installed. Install with: pip install ytmusicapi")
+        return None
+    if not dedup.authenticate():
+        print("❌ Authentication failed. Ensure headers_auth.json is valid.")
+        return None
+
+    cleaner = YTMusicCleaner(dedup.ytmusic)
+    print("\n⏪ Applying rollback...")
+    res = cleaner.rollback(data)
+    print(f"✅ Rolled back — Re-added: {res['playlist_readds']}, Removed Winners: {res['playlist_add_removals']}, Reliked: {res['ratings_liked']}")
+    if res['errors']:
+        print(f"⚠️ Errors: {res['errors']}")
+    return res
+
+
 def main():
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
@@ -351,6 +564,7 @@ Examples:
     parser.add_argument('--output-dir', '-o', help='Output directory for results')
     
     subparsers = parser.add_subparsers(dest='command', help='Available commands')
+
     
     # Compare command
     compare_parser = subparsers.add_parser('compare', help='Compare two music libraries')
@@ -383,6 +597,35 @@ Examples:
     enrich_parser = subparsers.add_parser('enrich', help='Enrich metadata using MusicBrainz')
     enrich_parser.add_argument('--library', required=True, help='Library file to enrich')
     enrich_parser.add_argument('--limit', type=int, help='Limit number of tracks to enrich')
+
+    # YouTube Music deduplication
+    dedup_parser = subparsers.add_parser('dedup-ytm', help='Find duplicates in your YouTube Music library')
+    dedup_parser.add_argument('--headers', required=True, help='Path to headers_auth.json (ytmusicapi)')
+    dedup_parser.add_argument('--limit', type=int, help='Limit number of library songs to scan')
+    dedup_parser.add_argument('--threshold', type=float, default=0.85, help='Similarity threshold (0-1, default 0.85)')
+    dedup_parser.add_argument('--output-dir', '-o', help='Directory to export duplicate report JSON')
+    dedup_parser.add_argument('--create-playlist', action='store_true', help='Create a playlist with detected duplicates')
+    dedup_parser.add_argument('--playlist-name', help='Name for the duplicates playlist')
+    dedup_parser.add_argument('--prefer-explicit', action='store_true', help='Prefer explicit version when picking the one to keep')
+    dedup_parser.add_argument('--losers-only', action='store_true', help='Add only non-preferred items from each group to the playlist')
+    dedup_parser.add_argument('--winners-only', action='store_true', help='Add only the preferred item from each group to the playlist')
+
+    # Cleanup command
+    clean_parser = subparsers.add_parser('clean-ytm', help='Plan and apply cleanup: unlike losers and replace in playlists')
+    clean_parser.add_argument('--headers', required=True, help='Path to headers_auth.json (ytmusicapi)')
+    clean_parser.add_argument('--limit', type=int, help='Limit number of library songs to scan')
+    clean_parser.add_argument('--threshold', type=float, default=0.85, help='Similarity threshold (0-1, default 0.85)')
+    clean_parser.add_argument('--prefer-explicit', action='store_true', help='Prefer explicit version as the one to keep')
+    clean_parser.add_argument('--groups', help='Comma-separated group IDs to include (default: all)')
+    clean_parser.add_argument('--unlike-losers', action='store_true', help='Unlike loser tracks from your library')
+    clean_parser.add_argument('--replace-in-playlists', action='store_true', help='Replace losers with winners in your playlists')
+    clean_parser.add_argument('--dry-run', action='store_true', help='Do not apply changes; just print summary')
+    clean_parser.add_argument('--save-plan', help='Path to save cleanup plan JSON')
+    clean_parser.add_argument('--save-undo', help='Path to save undo log JSON (for rollback)')
+
+    rollback_parser = subparsers.add_parser('rollback-ytm', help='Rollback a previous cleanup using an undo log')
+    rollback_parser.add_argument('--headers', required=True, help='Path to headers_auth.json (ytmusicapi)')
+    rollback_parser.add_argument('--undo-log', required=True, help='Path to undo log JSON produced by clean-ytm')
     
     args = parser.parse_args()
     
@@ -399,6 +642,14 @@ Examples:
             analyze_command(args)
         elif args.command == 'enrich':
             enrich_command(args)
+        elif args.command == 'dedup-ytm':
+            dedup_youtube_music_command(args)
+        elif args.command == 'rollback-ytm':
+            rollback_youtube_music_command(args)
+        elif args.command == 'ytm-headers-convert':
+            convert_headers_command(args)
+        elif args.command == 'clean-ytm':
+            clean_youtube_music_command(args)
     
     except KeyboardInterrupt:
         print("\n\n⚠️ Operation cancelled by user")
@@ -409,6 +660,29 @@ Examples:
             import traceback
             traceback.print_exc()
         sys.exit(1)
+
+
+def convert_headers_command(args):
+    """Convert raw HTTP headers text to headers_auth.json format for ytmusicapi."""
+    raw_path = Path(args.input)
+    if not raw_path.exists():
+        print(f"❌ Raw headers file not found: {raw_path}")
+        return None
+    headers = {}
+    for line in raw_path.read_text().splitlines():
+        if not line.strip() or ':' not in line:
+            continue
+        key, val = line.split(':', 1)
+        headers[key.strip()] = val.strip()
+
+    # Ensure required defaults if missing
+    headers.setdefault('X-Goog-AuthUser', '0')
+    headers.setdefault('x-origin', 'https://music.youtube.com')
+
+    out = Path(args.output)
+    out.write_text(json.dumps(headers, indent=2))
+    print(f"✅ Wrote {out} — you can now use it with ytmusicapi")
+    return out
 
 
 if __name__ == '__main__':

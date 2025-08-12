@@ -17,9 +17,12 @@ __version__ = "1.0.0"
 __author__ = "Music Library Tools"
 
 from .core import Track, Library, TrackMatcher
-from .platforms import AppleMusicParser, SpotifyParser, YouTubeMusicParser, create_parser, detect_platform
+from .platforms import AppleMusicParser, AppleMusicXMLParser, SpotifyParser, YouTubeMusicParser, create_parser, detect_platform
 from .comparison import LibraryComparator
 from .playlist import PlaylistManager
+from .dedup import YouTubeMusicDeduplicator
+from .cleanup import YTMusicCleaner
+from .playlist_cleaner import PlaylistCleaner
 from .enrichment import MusicBrainzEnricher, EnrichmentManager
 
 __all__ = [
@@ -27,6 +30,7 @@ __all__ = [
     'Library', 
     'TrackMatcher',
     'AppleMusicParser', 
+    'AppleMusicXMLParser', 
     'SpotifyParser', 
     'YouTubeMusicParser',
     'create_parser',
@@ -34,5 +38,8 @@ __all__ = [
     'LibraryComparator',
     'PlaylistManager',
     'MusicBrainzEnricher',
-    'EnrichmentManager'
+    'EnrichmentManager',
+    'YouTubeMusicDeduplicator',
+    'YTMusicCleaner',
+    'PlaylistCleaner'
 ]

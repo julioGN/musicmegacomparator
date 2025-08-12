@@ -13,7 +13,7 @@ def show_help():
     print("""
 🎵 MusicLib - Consolidated Music Tools Launcher
 
-Usage: python run_consolidated.py [option]
+Usage: python musiclib.py [option]
 
 Options:
   web, w     Launch web interface (Streamlit)
@@ -21,13 +21,14 @@ Options:
   help, h    Show this help message
 
 Examples:
-  python run_consolidated.py web          # Launch web interface
-  python run_consolidated.py cli          # Show CLI options
+  python musiclib.py web          # Launch web interface
+  python musiclib.py cli          # Show CLI options
   
   # Direct CLI usage:
   python musiclib-cli.py compare --source apple.csv --target spotify.csv
   python musiclib-cli.py create-playlist --tracks missing.csv --headers auth.json
   python musiclib-cli.py analyze --libraries *.csv
+  python musiclib-cli.py dedup-ytm --headers headers_auth.json --threshold 0.88
 """)
 
 def launch_web():
