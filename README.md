@@ -198,6 +198,13 @@ musiclib/
 ## 🛠️ Use Cases
 
 ### Find Missing Tracks
+ 
+## 🔒 Local Private Data
+- Folder: place machine-specific or sensitive files under `private/`.
+- Ignored: the root `.gitignore` excludes `private/**` and common exports.
+- Examples: `Library.xml`, `headers_auth.json`, `spot.json`, and large CSV exports.
+- Safety: you can delete `private/` before pushing or sharing this repo.
+
 Compare your Apple Music library against Spotify to find tracks available on one platform but not the other.
 
 ### Create Discovery Playlists

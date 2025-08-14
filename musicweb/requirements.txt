@@ -18,6 +18,9 @@ ytmusicapi>=1.11.0
 # HTTP requests
 requests>=2.31.0
 
+# Package resources for Python < 3.9 compatibility
+importlib_resources>=5.0.0; python_version < "3.9"
+
 # Visualization (optional)
 matplotlib>=3.7.0
 matplotlib-venn>=0.11.9

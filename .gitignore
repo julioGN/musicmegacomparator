@@ -1,0 +1,25 @@
+# macOS
+.DS_Store
+
+# Local runtime/state
+.streamlit_pid
+
+# Python caches
+__pycache__/
+*.pyc
+
+# Virtualenvs
+.venv/
+venv/
+ENV/
+
+# Private/local data (do not commit)
+private/**
+
+# Known sensitive/local files at repo root
+Library.xml
+Library*.xml
+headers_auth.json
+spot.json
+music library songs.csv
+
