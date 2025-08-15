@@ -16,12 +16,31 @@ import io
 
 import streamlit as st
 import pandas as pd
+import sys
+from pathlib import Path
 
-# Prefer explicit imports to avoid relying on package root re-exports
-from musicweb.core.models import Track, Library
-from musicweb.core.comparison import LibraryComparator
-from musicweb.platforms import create_parser
-from musicweb.platforms.detection import detect_platform
+# Add src to path for Streamlit Cloud compatibility
+src_path = Path(__file__).parent.parent.parent
+if str(src_path) not in sys.path:
+    sys.path.insert(0, str(src_path))
+
+# Import core modules with fallback handling
+try:
+    from musicweb.core.models import Track, Library
+    from musicweb.core.comparison import LibraryComparator
+    from musicweb.platforms import create_parser
+    from musicweb.platforms.detection import detect_platform
+except ImportError:
+    # Fallback for Streamlit Cloud
+    import os
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    src_dir = os.path.join(current_dir, '..', '..')
+    sys.path.insert(0, src_dir)
+    
+    from musicweb.core.models import Track, Library
+    from musicweb.core.comparison import LibraryComparator
+    from musicweb.platforms import create_parser
+    from musicweb.platforms.detection import detect_platform
 try:
     from musicweb.integrations.playlist import PlaylistManager
 except Exception:
