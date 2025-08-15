@@ -5,18 +5,29 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      target: production
+    container_name: musicweb_app
     ports:
       - "8501:8501"
     volumes:
-      - ./data:/home/musicweb/app/data
-      - ./config:/home/musicweb/app/config
-      - ./logs:/home/musicweb/app/logs
+      - ./data:/home/musicweb/app/data:rw
+      - ./logs:/home/musicweb/app/logs:rw
+      - ./uploads:/home/musicweb/app/uploads:rw
     environment:
+      - ENVIRONMENT=production
+      - LOG_LEVEL=INFO
       - PYTHONPATH=/home/musicweb/app/src
       - STREAMLIT_SERVER_PORT=8501
       - STREAMLIT_SERVER_ADDRESS=0.0.0.0
       - STREAMLIT_SERVER_HEADLESS=true
       - STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
+      - STREAMLIT_SERVER_ENABLE_CORS=false
+      - STREAMLIT_SERVER_ENABLE_XSRF_PROTECTION=true
+      # Add Redis connection if using caching
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
@@ -24,24 +35,112 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.musicweb.rule=Host(`musicweb.localhost`)"
+      - "traefik.http.services.musicweb.loadbalancer.server.port=8501"
+    networks:
+      - musicweb_network
 
-  # Optional: Add Redis for caching
+  # Redis for caching and session storage
   redis:
     image: redis:7-alpine
+    container_name: musicweb_redis
     ports:
       - "6379:6379"
     volumes:
       - redis_data:/data
+      - ./config/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    command: redis-server /usr/local/etc/redis/redis.conf
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 30s
       timeout: 10s
       retries: 3
+    sysctls:
+      - net.core.somaxconn=1024
+    networks:
+      - musicweb_network
+
+  # Optional: Reverse proxy with Traefik
+  traefik:
+    image: traefik:v2.10
+    container_name: musicweb_traefik
+    ports:
+      - "80:80"
+      - "8080:8080"  # Traefik dashboard
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./config/traefik:/etc/traefik:ro
+      - traefik_data:/data
+    command:
+      - --api.dashboard=true
+      - --api.insecure=true
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.web.address=:80
+      - --certificatesresolvers.letsencrypt.acme.email=admin@musicweb.app
+      - --certificatesresolvers.letsencrypt.acme.storage=/data/acme.json
+      - --certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web
+    restart: unless-stopped
+    networks:
+      - musicweb_network
+    profiles:
+      - proxy
+
+  # Optional: Monitoring with Prometheus
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: musicweb_prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    restart: unless-stopped
+    networks:
+      - musicweb_network
+    profiles:
+      - monitoring
+
+  # Optional: Grafana for dashboards
+  grafana:
+    image: grafana/grafana:latest
+    container_name: musicweb_grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    restart: unless-stopped
+    networks:
+      - musicweb_network
+    profiles:
+      - monitoring
 
 volumes:
   redis_data:
+    driver: local
+  traefik_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
 
 networks:
-  default:
-    name: musicweb_network
+  musicweb_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16

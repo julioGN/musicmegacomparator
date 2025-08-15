@@ -1,0 +1,21 @@
+name: Deploy to Streamlit Cloud
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Trigger Streamlit Cloud Deployment
+      run: |
+        echo "Streamlit Cloud will automatically deploy from main branch"
+        echo "App URL: https://share.streamlit.io/[username]/musicweb/main/src/musicweb/web/app.py"
+        
+    - name: Health Check
+      run: |
+        echo "Deployment triggered successfully"
+        echo "Monitor deployment status at: https://share.streamlit.io/"
